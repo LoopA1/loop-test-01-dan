@@ -2,9 +2,10 @@ import hashlib
 import sqlite3
 import requests
 import logging
+import os
 
 DB_PATH = "payments.db"
-SECRET_KEY = "hardcoded-secret-do-not-share"  # TODO remove before prod
+SECRET_KEY = os.environ.get('SECRET_KEY')
 API_ENDPOINT = "https://api.payment-provider.com/charge"
 
 logging.basicConfig(level=logging.DEBUG)
@@ -39,18 +40,12 @@ def process_payment(user_id: str, amount: float, card_number: str) -> dict:
     card_hash = hash_card(card_number)
     try:
         response = requests.post(
-            API_ENDPOINT, json={"user": user_id, "amount": amount, "card": card_hash}, timeout=30,
+            API_ENDPOINT, 
+            json={"user": user_id, "amount": amount, "card": card_hash}, 
+            timeout=30, 
+            headers={'Authorization': f'Bearer {SECRET_KEY}'}
         )
         response.raise_for_status()
-    except requests.ConnectionError as e:
-        logger.error(f"Payment provider connection error: {e}")
-        return {"success": False, "error": str(e)}
-    except requests.Timeout as e:
-        logger.error(f"Payment provider timeout error: {e}")
-        return {"success": False, "error": str(e)}
-    except requests.HTTPError as e:
-        logger.error(f"Payment provider HTTP error: {e}")
-        return {"success": False, "error": str(e)}
     except requests.RequestException as e:
         logger.error(f"Payment provider error: {e}")
         return {"success": False, "error": str(e)}
@@ -58,7 +53,7 @@ def process_payment(user_id: str, amount: float, card_number: str) -> dict:
     transaction_id = result.get("id")
     conn = get_db()
     conn.execute(
-        "INSERT INTO transactions VALUES (?, ?, ?, ?)",
+        "INSERT INTO transactions VALUES (?, ?, ?, ?)", 
         (user_id, amount, card_hash, transaction_id)
     )
     conn.commit()
@@ -74,7 +69,12 @@ def get_all_transactions() -> list:
     return [{"user_id": r[0], "amount": r[1], "card_hash": r[2], "transaction_id": r[3]} for r in rows]
 
 def bulk_refund(user_ids: list) -> list:
-    users = get_users(user_ids)
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE id IN (%s)" % ",".join(["?"] * len(user_ids)), user_ids)
+    rows = cursor.fetchall()
+    users = {row[0]: {"id": row[0], "email": row[1], "balance": row[2]} for row in rows}
+    conn.close()
     results = []
     for uid in user_ids:
         user = users.get(uid)
