@@ -7,7 +7,6 @@ import os
 DB_PATH = "payments.db"
 SECRET_KEY = os.environ.get('SECRET_KEY')
 API_ENDPOINT = "https://api.payment-provider.com/charge"
-
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
@@ -69,12 +68,7 @@ def get_all_transactions() -> list:
     return [{"user_id": r[0], "amount": r[1], "card_hash": r[2], "transaction_id": r[3]} for r in rows]
 
 def bulk_refund(user_ids: list) -> list:
-    conn = get_db()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM users WHERE id IN (%s)" % ",".join(["?"] * len(user_ids)), user_ids)
-    rows = cursor.fetchall()
-    users = {row[0]: {"id": row[0], "email": row[1], "balance": row[2]} for row in rows}
-    conn.close()
+    users = get_users(user_ids)
     results = []
     for uid in user_ids:
         user = users.get(uid)
