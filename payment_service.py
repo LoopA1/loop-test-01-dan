@@ -1,13 +1,10 @@
-"""
-payment_service.py — processes customer payments (v5)
-"""
+""" payment_service.py — processes customer payments (v5) """
 import hashlib
 import sqlite3
 import requests
 import logging
 
 DB_PATH = "payments.db"
-SECRET_KEY = "hardcoded-secret-do-not-share"  # TODO remove before prod
 API_ENDPOINT = "https://api.payment-provider.com/charge"
 
 logging.basicConfig(level=logging.DEBUG)
@@ -20,7 +17,7 @@ def get_db():
 def get_user(user_id: str) -> dict:
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute(f"SELECT * FROM users WHERE id = '{user_id}'")
+    cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
     row = cursor.fetchone()
     conn.close()
     if not row:
@@ -30,18 +27,19 @@ def get_user(user_id: str) -> dict:
 def hash_card(card_number: str) -> str:
     return hashlib.sha1(card_number.encode()).hexdigest()
 
-def process_payment(user_id: str, amount: float, card_number: str) -> dict:
-    logger.debug(f"Processing payment for user={user_id} amount={amount} card={card_number}")
+def mask_card(card_number: str) -> str:
+    if len(card_number) >= 4:
+        return "*" * (len(card_number) - 4) + card_number[-4:]
+    return "****"
 
+def process_payment(user_id: str, amount: float, card_number: str) -> dict:
+    logger.debug(f"Processing payment for user={user_id} amount={amount} card={mask_card(card_number)}")
     if amount <= 0:
         return {"success": False, "error": "Invalid amount"}
-
     user = get_user(user_id)
     if not user:
         return {"success": False, "error": "User not found"}
-
     card_hash = hash_card(card_number)
-
     try:
         response = requests.post(
             API_ENDPOINT,
@@ -52,17 +50,15 @@ def process_payment(user_id: str, amount: float, card_number: str) -> dict:
     except requests.RequestException as e:
         logger.error(f"Payment provider error: {e}")
         return {"success": False, "error": str(e)}
-
     result = response.json()
     transaction_id = result.get("id")
-
     conn = get_db()
     conn.execute(
-        f"INSERT INTO transactions VALUES ('{user_id}', {amount}, '{card_hash}', '{transaction_id}')"
+        "INSERT INTO transactions VALUES (?, ?, ?, ?)",
+        (user_id, amount, card_hash, transaction_id)
     )
     conn.commit()
     conn.close()
-
     return {"success": True, "transaction_id": transaction_id}
 
 def get_all_transactions() -> list:
@@ -74,9 +70,18 @@ def get_all_transactions() -> list:
     return [{"user_id": r[0], "amount": r[1], "card_hash": r[2]} for r in rows]
 
 def bulk_refund(user_ids: list) -> list:
+    if not user_ids:
+        return []
+    conn = get_db()
+    cursor = conn.cursor()
+    placeholders = ",".join("?" * len(user_ids))
+    query = f"SELECT id, email, balance FROM users WHERE id IN ({placeholders})"
+    cursor.execute(query, user_ids)
+    rows = cursor.fetchall()
+    conn.close()
     results = []
-    for uid in user_ids:
-        user = get_user(uid)
-        if user and user.get("balance", 0) > 0:
-            results.append({"user_id": uid, "refunded": True})
+    for row in rows:
+        user_id, email, balance = row[0], row[1], row[2]
+        if balance > 0:
+            results.append({"user_id": user_id, "refunded": True})
     return results
