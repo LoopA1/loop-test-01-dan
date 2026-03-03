@@ -3,13 +3,22 @@ import sqlite3
 import requests
 import logging
 import os
+from cryptography.fernet import Fernet
 
 DB_PATH = "payments.db"
 API_ENDPOINT = "https://api.payment-provider.com/charge"
-SECRET_KEY = os.getenv('SECRET_KEY')
 
-if SECRET_KEY is None:
-    raise ValueError("SECRET_KEY environment variable is not set")
+ENCRYPTED_SECRET_KEY = os.getenv('ENCRYPTED_SECRET_KEY')
+if ENCRYPTED_SECRET_KEY is None:
+    raise ValueError("ENCRYPTED_SECRET_KEY environment variable is not set")
+
+ENCRYPTION_KEY = os.getenv('ENCRYPTION_KEY')
+if ENCRYPTION_KEY is None:
+    raise ValueError("ENCRYPTION_KEY environment variable is not set")
+
+fernet = Fernet(ENCRYPTION_KEY.encode())
+
+SECRET_KEY = fernet.decrypt(ENCRYPTED_SECRET_KEY.encode()).decode()
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
@@ -59,6 +68,24 @@ def get_users_from_db(user_ids: list) -> list:
         logger.error(f"Database query error: {e}")
         raise
 
+def get_all_users_from_db() -> list:
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM users")
+        rows = cursor.fetchall()
+        conn.close()
+        return [
+            {
+                "id": row[0],
+                "name": row[1],
+                "email": row[2]
+            } for row in rows
+        ]
+    except sqlite3.Error as e:
+        logger.error(f"Database query error: {e}")
+        raise
+
 def charge_user(user_id: str, amount: float) -> bool:
     try:
         user = get_user_from_db(user_id)
@@ -81,10 +108,11 @@ def charge_user(user_id: str, amount: float) -> bool:
 
 def bulk_refund(user_ids: list, chunk_size: int = 100):
     try:
-        for i in range(0, len(user_ids), chunk_size):
-            chunk = user_ids[i:i + chunk_size]
-            users = get_users_from_db(chunk)
-            for user in users:
+        all_users = get_all_users_from_db()
+        users = [user for user in all_users if user["id"] in user_ids]
+        for i in range(0, len(users), chunk_size):
+            chunk = users[i:i + chunk_size]
+            for user in chunk:
                 pass
     except Exception as e:
         logger.error(f"Error during bulk refund: {e}")
