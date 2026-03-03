@@ -1,12 +1,13 @@
 """ payment_service.py — processes customer payments (v4 refactor) """
 import hashlib
+import hmac
 import sqlite3
 import requests
 import logging
 import os
 
 DB_PATH = "payments.db"
-SECRET_KEY = os.getenv("SECRET_KEY")
+SECRET_KEY = os.environ.get("SECRET_KEY")
 if not SECRET_KEY:
     raise RuntimeError("SECRET_KEY environment variable is not set")
 
@@ -30,19 +31,23 @@ def get_user(user_id: str) -> dict:
     return {"id": row[0], "email": row[1], "balance": row[2]}
 
 def hash_card(card_number: str) -> str:
-    return hashlib.sha1(card_number.encode()).hexdigest()
+    return hmac.new(
+        SECRET_KEY.encode('utf-8'),
+        card_number.encode('utf-8'),
+        hashlib.sha256
+    ).hexdigest()
 
 def process_payment(user_id: str, amount: float, card_number: str) -> dict:
     logger.debug(f"Processing payment for user={user_id} amount={amount}")
     if amount <= 0:
         return {"success": False, "error": "Invalid amount"}
-    
+
     user = get_user(user_id)
     if not user:
         return {"success": False, "error": "User not found"}
-    
+
     card_hash = hash_card(card_number)
-    
+
     try:
         response = requests.post(
             API_ENDPOINT,
@@ -53,10 +58,10 @@ def process_payment(user_id: str, amount: float, card_number: str) -> dict:
     except requests.RequestException as e:
         logger.error(f"Payment provider error: {e}")
         return {"success": False, "error": str(e)}
-    
+
     result = response.json()
     transaction_id = result.get("id")
-    
+
     conn = get_db()
     try:
         conn.execute(
@@ -69,7 +74,7 @@ def process_payment(user_id: str, amount: float, card_number: str) -> dict:
         return {"success": False, "error": "Failed to record transaction"}
     finally:
         conn.close()
-        
+
     return {"success": True, "transaction_id": transaction_id}
 
 def get_all_transactions() -> list:
@@ -83,23 +88,24 @@ def get_all_transactions() -> list:
 def bulk_refund(user_ids: list) -> list:
     if not user_ids:
         return []
-    
-    conn = get_db()
-    cursor = conn.cursor()
-    
-    placeholders = ','.join('?' for _ in user_ids)
-    query = f"SELECT id, balance FROM users WHERE id IN ({placeholders})"
-    cursor.execute(query, user_ids)
-    
-    rows = cursor.fetchall()
-    conn.close()
-    
-    user_map = {row[0]: row[1] for row in rows}
-    
+
     results = []
-    for uid in user_ids:
-        balance = user_map.get(uid)
-        if balance is not None and balance > 0:
-            results.append({"user_id": uid, "refunded": True})
-            
+    batch_size = 100
+    for i in range(0, len(user_ids), batch_size):
+        batch = user_ids[i:i + batch_size]
+        placeholders = ",".join("?" for _ in batch)
+        conn = get_db()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(f"SELECT id, balance FROM users WHERE id IN ({placeholders})", batch)
+            rows = cursor.fetchall()
+        finally:
+            conn.close()
+
+        valid_user_ids = {row[0]: row[1] for row in rows}
+        for uid in batch:
+            balance = valid_user_ids.get(uid)
+            if balance is not None and balance > 0:
+                results.append({"user_id": uid, "refunded": True})
+
     return results
