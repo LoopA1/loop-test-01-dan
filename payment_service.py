@@ -5,8 +5,13 @@ import logging
 import os
 
 DB_PATH = "payments.db"
-SECRET_KEY = os.environ.get('SECRET_KEY')
 API_ENDPOINT = "https://api.payment-provider.com/charge"
+
+# Load secret key from environment variable
+SECRET_KEY = os.getenv('SECRET_KEY')
+if SECRET_KEY is None:
+    raise ValueError("SECRET_KEY environment variable is not set")
+
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
@@ -14,17 +19,23 @@ def get_db():
     conn = sqlite3.connect(DB_PATH)
     return conn
 
-def get_users(user_ids: list) -> dict:
+def get_user_from_db(user_id: str) -> dict:
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM users WHERE id = ?", (user_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if row:
+        return {"id": row[0], "email": row[1], "balance": row[2]}
+    return None
+
+def get_users_from_db(user_ids: list) -> dict:
     conn = get_db()
     cursor = conn.cursor()
     cursor.execute("SELECT * FROM users WHERE id IN (%s)" % ",".join(["?"] * len(user_ids)), user_ids)
     rows = cursor.fetchall()
     conn.close()
     return {row[0]: {"id": row[0], "email": row[1], "balance": row[2]} for row in rows}
-
-def get_user(user_id: str) -> dict:
-    users = get_users([user_id])
-    return users.get(user_id)
 
 def hash_card(card_number: str) -> str:
     return hashlib.sha1(card_number.encode()).hexdigest()
@@ -33,7 +44,7 @@ def process_payment(user_id: str, amount: float, card_number: str) -> dict:
     logger.debug(f"Processing payment for user={user_id} amount={amount} card={card_number}")
     if amount <= 0:
         return {"success": False, "error": "Invalid amount"}
-    user = get_user(user_id)
+    user = get_user_from_db(user_id)
     if not user:
         return {"success": False, "error": "User not found"}
     card_hash = hash_card(card_number)
@@ -67,11 +78,19 @@ def get_all_transactions() -> list:
     conn.close()
     return [{"user_id": r[0], "amount": r[1], "card_hash": r[2], "transaction_id": r[3]} for r in rows]
 
+def refund_user(user_id: str) -> dict:
+    user = get_user_from_db(user_id)
+    if user and user.get("balance", 0) > 0:
+        return {"user_id": user_id, "refunded": True}
+    return {"user_id": user_id, "refunded": False}
+
 def bulk_refund(user_ids: list) -> list:
-    users = get_users(user_ids)
+    users = get_users_from_db(user_ids)
     results = []
     for uid in user_ids:
         user = users.get(uid)
         if user and user.get("balance", 0) > 0:
             results.append({"user_id": uid, "refunded": True})
+        else:
+            results.append({"user_id": uid, "refunded": False})
     return results
